@@ -78,6 +78,38 @@ alembic/       — миграции
 Каждую минуту: напоминания (за 1 день, 12 ч, 1 ч, старт) и запуск игр.  
 Каждые 5 минут: завершение игр (4 ч после старта), архив, начисление баллов.
 
+## Деплой на Railway
+
+По логам контейнер падает, если **не заданы переменные окружения**. В проекте Railway → **Variables** добавьте:
+
+| Переменная | Значение |
+|------------|----------|
+| `BOT_TOKEN` | Токен от [@BotFather](https://t.me/BotFather) |
+| `DATABASE_URL` | URL PostgreSQL (см. ниже) |
+| `ADMIN_TELEGRAM_IDS` | Ваш Telegram ID |
+| `TIMEZONE` | `Europe/Moscow` (опционально) |
+
+**Важно:** переменные на скриншоте у сервиса **Postgres** бот **не видит**.  
+Нужно открыть сервис **bot** (ваш GitHub-репозиторий) → **Variables** → добавить:
+
+- `BOT_TOKEN` — вручную
+- `DATABASE_URL` — **Add Reference** → Postgres → `DATABASE_URL` (внутренний URL)
+- `ADMIN_TELEGRAM_IDS` — **числовой** Telegram ID (не `@username`). Узнать: [@userinfobot](https://t.me/userinfobot)
+
+**База данных:**
+
+1. В проекте Railway добавьте сервис **PostgreSQL**.
+2. В сервисе **бота** создайте `DATABASE_URL` через Reference на Postgres.
+3. Railway выдаёт `postgresql://...` — бот сам преобразует в `postgresql+asyncpg://...`.
+
+**После деплоя** выполните миграции (один раз), в Railway → Shell или отдельным одноразовым запуском:
+
+```bash
+alembic upgrade head
+```
+
+Или добавьте в **Start Command** перед ботом: `alembic upgrade head && python -m bot.main`
+
 ## Безопасность
 
 - Не публикуйте `.env` и токен бота в репозитории.
