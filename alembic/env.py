@@ -1,14 +1,18 @@
-import asyncio
+"""
+Alembic: только СИНХРОННЫЙ движок (psycopg2).
+
+Async env.py + asyncio.run() + asyncpg на Railway даёт Connection reset при SSL.
+Бот работает через asyncpg (database/session.py), миграции — отдельно через psycopg2.
+"""
 import logging
 from logging.config import fileConfig
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import create_engine, pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from bot.config import get_settings
-from bot.db_connect import asyncpg_connect_args
 from database.base import Base
 
 import models.action_log  # noqa: F401
@@ -30,8 +34,22 @@ target_metadata = Base.metadata
 settings = get_settings()
 
 
+def _sync_migration_url(async_url: str) -> str:
+    """postgresql+asyncpg://... → postgresql+psycopg2://... + sslmode для Railway."""
+    url = async_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
+    if not url.startswith("postgresql"):
+        url = f"postgresql+psycopg2://{url.split('://', 1)[-1]}"
+
+    if "rlwy.net" in url or "railway.app" in url:
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        query["sslmode"] = ["require"]
+        url = urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+    return url
+
+
 def run_migrations_offline() -> None:
-    url = settings.database_url
+    url = _sync_migration_url(settings.database_url)
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -48,27 +66,21 @@ def do_run_migrations(connection: Connection) -> None:
         context.run_migrations()
 
 
-async def run_async_migrations() -> None:
-    """Прямой AsyncEngine из настроек — не из placeholder alembic.ini."""
-    logger.info("Alembic: connect to %s", settings.database_host)
-    connectable = create_async_engine(
-        settings.database_url,
+def run_migrations_online() -> None:
+    url = _sync_migration_url(settings.database_url)
+    host = urlparse(url).hostname
+    logger.info("Alembic sync migrate → host=%s", host)
+
+    connectable = create_engine(
+        url,
         poolclass=pool.NullPool,
-        connect_args=asyncpg_connect_args(settings.database_url),
+        connect_args={"connect_timeout": 60},
     )
     try:
-        async with connectable.connect() as connection:
-            await connection.run_sync(do_run_migrations)
+        with connectable.connect() as connection:
+            do_run_migrations(connection)
     finally:
-        await connectable.dispose()
-
-
-def run_migrations_online() -> None:
-    """
-    Вызывается из bot/main.py ДО asyncio.run(main()) — event loop ещё нет.
-    Только asyncio.run(), без get_running_loop() и без вложенных loop.
-    """
-    asyncio.run(run_async_migrations())
+        connectable.dispose()
 
 
 if context.is_offline_mode():

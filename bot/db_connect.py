@@ -1,13 +1,16 @@
-"""Общие параметры подключения asyncpg (бот + Alembic)."""
+"""Параметры подключения asyncpg для бота (не для Alembic)."""
 import ssl
 
 
 def asyncpg_connect_args(database_url: str) -> dict:
     """
-    Railway *.rlwy.net требует SSL через connect_args.
-    Параметр ?ssl=require в URL asyncpg часто не понимает — отсюда таймауты.
+    Railway proxy (*.rlwy.net): SSL без проверки сертификата прокси.
+    create_default_context() часто даёт Connection reset by peer на Railway.
     """
-    args: dict = {"timeout": 60}
+    args: dict = {"timeout": 60, "command_timeout": 60}
     if "rlwy.net" in database_url or "railway.app" in database_url:
-        args["ssl"] = ssl.create_default_context()
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        args["ssl"] = ctx
     return args
