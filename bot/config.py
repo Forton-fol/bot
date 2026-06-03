@@ -1,45 +1,20 @@
 from functools import lru_cache
+import logging
 import os
 from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+logger = logging.getLogger(__name__)
 
-def _resolve_database_url() -> str:
-    """
-    Railway: внутренний postgres.railway.internal иногда не резолвится у сервиса бота.
-    По умолчанию при наличии DATABASE_PUBLIC_URL используем его.
-    """
-    internal = os.getenv("DATABASE_URL", "").strip()
-    public = os.getenv("DATABASE_PUBLIC_URL", "").strip()
-    private = os.getenv("DATABASE_PRIVATE_URL", "").strip()
-    prefer_public = os.getenv("PREFER_PUBLIC_DATABASE", "true").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
 
-    ordered: list[str] = []
-    if prefer_public:
-        if public:
-            ordered.append(public)
-        if internal:
-            ordered.append(internal)
-        if private:
-            ordered.append(private)
-    else:
-        if internal:
-            ordered.append(internal)
-        if private:
-            ordered.append(private)
-        if public:
-            ordered.append(public)
-
-    for url in ordered:
-        if url:
-            return url
-    return ""
+def _is_valid_pg_url(url: str) -> bool:
+    if not url or url.startswith("${"):
+        return False
+    if "@db:" in url or "@db/" in url:
+        return False
+    return url.startswith("postgresql://") or url.startswith("postgresql+asyncpg://")
 
 
 def _ensure_ssl(url: str) -> str:
@@ -53,6 +28,52 @@ def _ensure_ssl(url: str) -> str:
     query["ssl"] = ["require"]
     new_query = urlencode(query, doseq=True)
     return urlunparse(parsed._replace(query=new_query))
+
+
+def _normalize_url(url: str) -> str:
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return _ensure_ssl(url)
+
+
+def _resolve_database_url() -> str:
+    internal = os.getenv("DATABASE_URL", "").strip()
+    public = os.getenv("DATABASE_PUBLIC_URL", "").strip()
+    private = os.getenv("DATABASE_PRIVATE_URL", "").strip()
+    on_railway = bool(os.getenv("RAILWAY_ENVIRONMENT"))
+
+    if not _is_valid_pg_url(internal):
+        internal = ""
+    if not _is_valid_pg_url(public):
+        public = ""
+    if not _is_valid_pg_url(private):
+        private = ""
+
+    if on_railway:
+        if public:
+            logger.info("Railway: using DATABASE_PUBLIC_URL")
+            return _normalize_url(public)
+        raise RuntimeError(
+            "На Railway в сервисе BOT нет DATABASE_PUBLIC_URL. "
+            "Variables → New Variable → Add Reference → Postgres → DATABASE_PUBLIC_URL. "
+            "Только DATABASE_URL (postgres.railway.internal) у вас не работает — таймаут в логах."
+        )
+
+    prefer_public = os.getenv("PREFER_PUBLIC_DATABASE", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    ordered: list[str] = []
+    if prefer_public:
+        ordered.extend([public, internal, private])
+    else:
+        ordered.extend([internal, private, public])
+
+    for url in ordered:
+        if url:
+            return _normalize_url(url)
+    return ""
 
 
 class Settings(BaseSettings):
@@ -71,23 +92,15 @@ class Settings(BaseSettings):
     @model_validator(mode="before")
     @classmethod
     def inject_database_url(cls, data: dict) -> dict:
-        if not data.get("database_url"):
-            resolved = _resolve_database_url()
-            if resolved:
-                data["database_url"] = resolved
+        data["database_url"] = _resolve_database_url()
         return data
 
     @field_validator("database_url", mode="before")
     @classmethod
     def normalize_database_url(cls, value: str) -> str:
         if not value:
-            resolved = _resolve_database_url()
-            if not resolved:
-                return value
-            value = resolved
-        if isinstance(value, str) and value.startswith("postgresql://"):
-            value = value.replace("postgresql://", "postgresql+asyncpg://", 1)
-        return _ensure_ssl(value)
+            return _resolve_database_url()
+        return _normalize_url(value)
 
     @property
     def database_host(self) -> str:
@@ -116,10 +129,10 @@ def get_settings() -> Settings:
         missing = []
         if not os.getenv("BOT_TOKEN"):
             missing.append("BOT_TOKEN")
-        if not _resolve_database_url():
-            missing.append(
-                "DATABASE_URL или DATABASE_PUBLIC_URL (Reference из Postgres на сервис бота)"
-            )
+        if not os.getenv("DATABASE_PUBLIC_URL") and os.getenv("RAILWAY_ENVIRONMENT"):
+            missing.append("DATABASE_PUBLIC_URL (Reference на Postgres)")
+        elif not _resolve_database_url():
+            missing.append("DATABASE_URL")
         hint = (
             "Задайте переменные в сервисе БОТА на Railway: " + ", ".join(missing)
             if missing

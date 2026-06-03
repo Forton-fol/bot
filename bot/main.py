@@ -85,10 +85,13 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    import os
+
     settings = get_settings()
     setup_logging(settings.log_level)
-    logging.getLogger(__name__).info(
-        "Connecting to database host: %s", settings.database_host
-    )
+    log = logging.getLogger(__name__)
+    log.info("DATABASE_PUBLIC_URL задана: %s", bool(os.getenv("DATABASE_PUBLIC_URL")))
+    log.info("DATABASE_URL задана: %s", bool(os.getenv("DATABASE_URL")))
+    log.info("Подключение к БД, host: %s", settings.database_host)
     run_migrations()
     asyncio.run(main())
