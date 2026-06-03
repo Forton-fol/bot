@@ -1,10 +1,9 @@
 """
-Alembic: только СИНХРОННЫЙ движок (psycopg2).
-
-Async env.py + asyncio.run() + asyncpg на Railway даёт Connection reset при SSL.
-Бот работает через asyncpg (database/session.py), миграции — отдельно через psycopg2.
+Alembic: синхронный psycopg2.
+На Railway пробует URL по очереди: internal → public (см. bot.config.get_database_url_candidates).
 """
 import logging
+import time
 from logging.config import fileConfig
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
@@ -12,7 +11,7 @@ from alembic import context
 from sqlalchemy import create_engine, pool
 from sqlalchemy.engine import Connection
 
-from bot.config import get_settings
+from bot.config import get_database_url_candidates
 from database.base import Base
 
 import models.action_log  # noqa: F401
@@ -31,33 +30,29 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
-settings = get_settings()
 
 
-def _sync_migration_url(async_url: str) -> str:
-    """postgresql+asyncpg://... → postgresql+psycopg2://... + sslmode для Railway."""
+def _to_psycopg2_url(async_url: str) -> str:
     url = async_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
-    if not url.startswith("postgresql"):
-        url = f"postgresql+psycopg2://{url.split('://', 1)[-1]}"
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
-    if "rlwy.net" in url or "railway.app" in url:
-        parsed = urlparse(url)
-        query = parse_qs(parsed.query)
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    query = parse_qs(parsed.query)
+
+    for key in ("ssl", "sslmode"):
+        query.pop(key, None)
+
+    # Внутренняя сеть Railway — без SSL
+    if "railway.internal" in host:
+        pass
+    elif "rlwy.net" in host or "railway.app" in host:
+        # Публичный прокси — только с SSL
         query["sslmode"] = ["require"]
-        url = urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
-    return url
 
-
-def run_migrations_offline() -> None:
-    url = _sync_migration_url(settings.database_url)
-    context.configure(
-        url=url,
-        target_metadata=target_metadata,
-        literal_binds=True,
-        dialect_opts={"paramstyle": "named"},
-    )
-    with context.begin_transaction():
-        context.run_migrations()
+    new_query = urlencode(query, doseq=True)
+    return urlunparse(parsed._replace(query=new_query))
 
 
 def do_run_migrations(connection: Connection) -> None:
@@ -66,21 +61,56 @@ def do_run_migrations(connection: Connection) -> None:
         context.run_migrations()
 
 
-def run_migrations_online() -> None:
-    url = _sync_migration_url(settings.database_url)
-    host = urlparse(url).hostname
-    logger.info("Alembic sync migrate → host=%s", host)
-
-    connectable = create_engine(
-        url,
+def _migrate_with_url(psycopg_url: str) -> None:
+    host = urlparse(psycopg_url).hostname
+    logger.info("Alembic trying host=%s", host)
+    engine = create_engine(
+        psycopg_url,
         poolclass=pool.NullPool,
-        connect_args={"connect_timeout": 60},
+        connect_args={"connect_timeout": 30},
     )
     try:
-        with connectable.connect() as connection:
+        with engine.connect() as connection:
             do_run_migrations(connection)
     finally:
-        connectable.dispose()
+        engine.dispose()
+
+
+def run_migrations_online() -> None:
+    candidates = get_database_url_candidates()
+    if not candidates:
+        raise RuntimeError("No DATABASE_URL configured")
+
+    errors: list[str] = []
+    for async_url in candidates:
+        psycopg_url = _to_psycopg2_url(async_url)
+        for attempt in range(1, 4):
+            try:
+                _migrate_with_url(psycopg_url)
+                logger.info("Alembic OK on host=%s", urlparse(psycopg_url).hostname)
+                return
+            except Exception as exc:
+                msg = f"{urlparse(psycopg_url).hostname} attempt {attempt}: {exc}"
+                logger.warning(msg)
+                errors.append(msg)
+                time.sleep(2 * attempt)
+
+    raise RuntimeError("All database URLs failed:\n" + "\n".join(errors))
+
+
+def run_migrations_offline() -> None:
+    candidates = get_database_url_candidates()
+    if not candidates:
+        raise RuntimeError("No DATABASE_URL configured")
+    url = _to_psycopg2_url(candidates[0])
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
+    with context.begin_transaction():
+        context.run_migrations()
 
 
 if context.is_offline_mode():

@@ -1,7 +1,7 @@
 from functools import lru_cache
 import logging
 import os
-from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -18,7 +18,6 @@ def _is_valid_pg_url(url: str) -> bool:
 
 
 def _strip_ssl_query(url: str) -> str:
-    """SSL для Railway задаётся в connect_args (bot/db_connect.py), не в URL."""
     parsed = urlparse(url)
     query = parse_qs(parsed.query)
     for key in ("ssl", "sslmode"):
@@ -33,43 +32,60 @@ def _normalize_url(url: str) -> str:
     return _strip_ssl_query(url)
 
 
-def _resolve_database_url() -> str:
+def get_database_url_candidates() -> list[str]:
+    """
+    Список URL для попытки подключения (порядок важен).
+    На Railway: сначала внутренний DATABASE_URL (без SSL), потом публичный прокси.
+    """
     internal = os.getenv("DATABASE_URL", "").strip()
     public = os.getenv("DATABASE_PUBLIC_URL", "").strip()
     private = os.getenv("DATABASE_PRIVATE_URL", "").strip()
     on_railway = bool(os.getenv("RAILWAY_ENVIRONMENT"))
 
-    if not _is_valid_pg_url(internal):
-        internal = ""
-    if not _is_valid_pg_url(public):
-        public = ""
-    if not _is_valid_pg_url(private):
-        private = ""
+    valid = {
+        "internal": _normalize_url(internal) if _is_valid_pg_url(internal) else "",
+        "private": _normalize_url(private) if _is_valid_pg_url(private) else "",
+        "public": _normalize_url(public) if _is_valid_pg_url(public) else "",
+    }
 
     if on_railway:
-        if public:
-            logger.info("Railway: using DATABASE_PUBLIC_URL")
-            return _normalize_url(public)
-        raise RuntimeError(
-            "На Railway в сервисе BOT нет DATABASE_PUBLIC_URL. "
-            "Variables → New Variable → Add Reference → Postgres → DATABASE_PUBLIC_URL. "
-            "Только DATABASE_URL (postgres.railway.internal) у вас не работает — таймаут в логах."
+        order = ["internal", "private", "public"]
+    else:
+        prefer_public = os.getenv("PREFER_PUBLIC_DATABASE", "true").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        order = (
+            ["public", "internal", "private"]
+            if prefer_public
+            else ["internal", "private", "public"]
         )
 
-    prefer_public = os.getenv("PREFER_PUBLIC_DATABASE", "true").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    ordered: list[str] = []
-    if prefer_public:
-        ordered.extend([public, internal, private])
-    else:
-        ordered.extend([internal, private, public])
+    seen: set[str] = set()
+    result: list[str] = []
+    for key in order:
+        url = valid.get(key, "")
+        if url and url not in seen:
+            seen.add(url)
+            result.append(url)
+    return result
 
-    for url in ordered:
-        if url:
-            return _normalize_url(url)
+
+def _resolve_database_url() -> str:
+    candidates = get_database_url_candidates()
+    on_railway = bool(os.getenv("RAILWAY_ENVIRONMENT"))
+
+    if candidates:
+        host = urlparse(candidates[0]).hostname or "?"
+        logger.info("Primary database host: %s", host)
+        return candidates[0]
+
+    if on_railway:
+        raise RuntimeError(
+            "На Railway в сервисе BOT нужен Reference: Postgres → DATABASE_URL. "
+            "Опционально DATABASE_PUBLIC_URL как запасной."
+        )
     return ""
 
 
@@ -126,10 +142,8 @@ def get_settings() -> Settings:
         missing = []
         if not os.getenv("BOT_TOKEN"):
             missing.append("BOT_TOKEN")
-        if not os.getenv("DATABASE_PUBLIC_URL") and os.getenv("RAILWAY_ENVIRONMENT"):
-            missing.append("DATABASE_PUBLIC_URL (Reference на Postgres)")
-        elif not _resolve_database_url():
-            missing.append("DATABASE_URL")
+        if not get_database_url_candidates():
+            missing.append("DATABASE_URL (Reference на Postgres)")
         hint = (
             "Задайте переменные в сервисе БОТА на Railway: " + ", ".join(missing)
             if missing

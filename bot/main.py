@@ -89,9 +89,12 @@ if __name__ == "__main__":
     settings = get_settings()
     setup_logging(settings.log_level)
     log = logging.getLogger(__name__)
+    from database.session import all_configured_db_hosts
+
     log.info("DATABASE_PUBLIC_URL задана: %s", bool(os.getenv("DATABASE_PUBLIC_URL")))
     log.info("DATABASE_URL задана: %s", bool(os.getenv("DATABASE_URL")))
-    log.info("Подключение к БД, host: %s", settings.database_host)
+    log.info("Порядок хостов БД: %s", " → ".join(all_configured_db_hosts()))
+    log.info("Основной host: %s", settings.database_host)
 
     # 1) Миграции — синхронно, без running event loop
     try:
