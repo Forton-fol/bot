@@ -99,8 +99,11 @@ alembic/       — миграции
 **База данных:**
 
 1. В проекте Railway добавьте сервис **PostgreSQL**.
-2. В сервисе **бота** создайте `DATABASE_URL` через Reference на Postgres.
-3. Railway выдаёт `postgresql://...` — бот сам преобразует в `postgresql+asyncpg://...`.
+2. В сервисе **бота** добавьте **обе** ссылки (Reference) из Postgres:
+   - `DATABASE_URL` → `DATABASE_URL` (внутренний)
+   - `DATABASE_PUBLIC_URL` → `DATABASE_PUBLIC_URL` (публичный прокси)
+3. Бот по умолчанию использует **публичный** URL (`PREFER_PUBLIC_DATABASE=true`), если внутренний `postgres.railway.internal` не резолвится.
+4. Railway выдаёт `postgresql://...` — бот сам добавляет `asyncpg` и `ssl=require` для `*.rlwy.net`.
 
 **После деплоя** выполните миграции (один раз), в Railway → Shell или отдельным одноразовым запуском:
 

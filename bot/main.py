@@ -87,5 +87,8 @@ async def main() -> None:
 if __name__ == "__main__":
     settings = get_settings()
     setup_logging(settings.log_level)
+    logging.getLogger(__name__).info(
+        "Connecting to database host: %s", settings.database_host
+    )
     run_migrations()
     asyncio.run(main())
