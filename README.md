@@ -108,7 +108,13 @@ alembic/       — миграции
 alembic upgrade head
 ```
 
-Или добавьте в **Start Command** перед ботом: `alembic upgrade head && python -m bot.main`
+**Start Command** на Railway:
+
+```bash
+python -m bot.main
+```
+
+Миграции выполняются автоматически при старте. Если бот не отвечает на `/start`, проверьте в логах строки `Bot @username ready` и `Webhook removed` — без них polling не работает (часто из‑за старого webhook).
 
 ## Безопасность
 

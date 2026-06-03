@@ -17,14 +17,22 @@ router = Router(name="common")
 
 
 @router.message(Command("start"))
-async def cmd_start(message: Message, session: AsyncSession, user: User) -> None:
+async def cmd_start(message: Message, session: AsyncSession, user: User | None = None) -> None:
+    name = user.full_name if user else (message.from_user.full_name if message.from_user else "Игрок")
     await message.answer(
-        f"Добро пожаловать в НРИ-клуб, {user.full_name}! 🎲\n\n"
+        f"Добро пожаловать в НРИ-клуб, {name}! 🎲\n\n"
         "Здесь вы можете записываться на игры, получать напоминания "
         "и копить баллы за посещения.",
         reply_markup=main_menu_kb(),
     )
-    await send_upcoming_games(message, session, user)
+    if user:
+        try:
+            await send_upcoming_games(message, session, user)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("send_upcoming_games failed")
+            await message.answer("📭 Список игр временно недоступен. Попробуйте /games позже.")
 
 
 @router.message(Command("help"))
