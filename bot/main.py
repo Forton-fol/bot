@@ -50,10 +50,8 @@ async def seed_data() -> None:
 
 async def main() -> None:
     settings = get_settings()
-    setup_logging(settings.log_level)
     log = logging.getLogger(__name__)
 
-    run_migrations()
     await seed_data()
 
     bot = Bot(
@@ -87,4 +85,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    settings = get_settings()
+    setup_logging(settings.log_level)
+    run_migrations()
     asyncio.run(main())
