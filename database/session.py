@@ -3,15 +3,16 @@ from collections.abc import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from bot.config import get_settings
+from bot.db_connect import asyncpg_connect_args
 from database.base import Base
 
-settings = get_settings()
+_settings = get_settings()
 
 engine = create_async_engine(
-    settings.database_url,
+    _settings.database_url,
     echo=False,
     pool_pre_ping=True,
-    connect_args={"timeout": 60},
+    connect_args=asyncpg_connect_args(_settings.database_url),
 )
 
 async_session_factory = async_sessionmaker(

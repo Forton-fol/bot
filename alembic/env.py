@@ -1,15 +1,16 @@
 import asyncio
+import logging
 from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from bot.config import get_settings
+from bot.db_connect import asyncpg_connect_args
 from database.base import Base
 
-# Import all models for metadata
 import models.action_log  # noqa: F401
 import models.game  # noqa: F401
 import models.game_participant  # noqa: F401
@@ -19,17 +20,18 @@ import models.role  # noqa: F401
 import models.room  # noqa: F401
 import models.user  # noqa: F401
 
+logger = logging.getLogger(__name__)
 config = context.config
+
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.database_url)
 
 
 def run_migrations_offline() -> None:
-    url = config.get_main_option("sqlalchemy.url")
+    url = settings.database_url
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -47,28 +49,26 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
+    """Прямой AsyncEngine из настроек — не из placeholder alembic.ini."""
+    logger.info("Alembic: connect to %s", settings.database_host)
+    connectable = create_async_engine(
+        settings.database_url,
         poolclass=pool.NullPool,
+        connect_args=asyncpg_connect_args(settings.database_url),
     )
-    async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
-    await connectable.dispose()
+    try:
+        async with connectable.connect() as connection:
+            await connection.run_sync(do_run_migrations)
+    finally:
+        await connectable.dispose()
 
 
 def run_migrations_online() -> None:
-    """Запуск миграций: отдельно от event loop бота (см. bot/main.py)."""
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        asyncio.run(run_async_migrations())
-        return
-
-    import concurrent.futures
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        pool.submit(asyncio.run, run_async_migrations()).result()
+    """
+    Вызывается из bot/main.py ДО asyncio.run(main()) — event loop ещё нет.
+    Только asyncio.run(), без get_running_loop() и без вложенных loop.
+    """
+    asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():

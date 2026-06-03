@@ -6,14 +6,11 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+
 from bot.config import get_settings
-from database.session import async_session_factory
-from handlers import setup_routers
-from middlewares import ActionLoggingMiddleware, DbSessionMiddleware, UserMiddleware
 from middlewares.errors import on_error
 from repositories.role import RoleRepository
 from repositories.room import RoomRepository
-from scheduler import setup_scheduler
 
 
 def setup_logging(level: str) -> None:
@@ -25,21 +22,18 @@ def setup_logging(level: str) -> None:
 
 
 def run_migrations() -> None:
-    try:
-        from alembic import command
-        from alembic.config import Config
+    """Синхронный запуск Alembic — только до asyncio.run(main())."""
+    from alembic import command
+    from alembic.config import Config
 
-        cfg = Config("alembic.ini")
-        command.upgrade(cfg, "head")
-        logging.getLogger(__name__).info("Database migrations applied")
-    except Exception:
-        logging.getLogger(__name__).exception(
-            "Alembic migration failed — check DATABASE_URL"
-        )
-        raise
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "head")
+    logging.getLogger(__name__).info("Database migrations applied")
 
 
 async def seed_data() -> None:
+    from database.session import async_session_factory
+
     async with async_session_factory() as session:
         roles = RoleRepository(session)
         rooms = RoomRepository(session)
@@ -49,6 +43,11 @@ async def seed_data() -> None:
 
 
 async def main() -> None:
+    from database.session import async_session_factory  # noqa: F401
+    from handlers import setup_routers
+    from middlewares import ActionLoggingMiddleware, DbSessionMiddleware, UserMiddleware
+    from scheduler import setup_scheduler
+
     settings = get_settings()
     log = logging.getLogger(__name__)
 
@@ -93,5 +92,13 @@ if __name__ == "__main__":
     log.info("DATABASE_PUBLIC_URL задана: %s", bool(os.getenv("DATABASE_PUBLIC_URL")))
     log.info("DATABASE_URL задана: %s", bool(os.getenv("DATABASE_URL")))
     log.info("Подключение к БД, host: %s", settings.database_host)
-    run_migrations()
+
+    # 1) Миграции — синхронно, без running event loop
+    try:
+        run_migrations()
+    except Exception:
+        log.exception("Alembic migration failed")
+        raise
+
+    # 2) Бот — один event loop
     asyncio.run(main())

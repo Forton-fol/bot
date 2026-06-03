@@ -17,15 +17,12 @@ def _is_valid_pg_url(url: str) -> bool:
     return url.startswith("postgresql://") or url.startswith("postgresql+asyncpg://")
 
 
-def _ensure_ssl(url: str) -> str:
-    """Публичный прокси Railway (*.rlwy.net) требует SSL."""
-    if "rlwy.net" not in url and "railway.app" not in url:
-        return url
+def _strip_ssl_query(url: str) -> str:
+    """SSL для Railway задаётся в connect_args (bot/db_connect.py), не в URL."""
     parsed = urlparse(url)
     query = parse_qs(parsed.query)
-    if "sslmode" in query or "ssl" in query:
-        return url
-    query["ssl"] = ["require"]
+    for key in ("ssl", "sslmode"):
+        query.pop(key, None)
     new_query = urlencode(query, doseq=True)
     return urlunparse(parsed._replace(query=new_query))
 
@@ -33,7 +30,7 @@ def _ensure_ssl(url: str) -> str:
 def _normalize_url(url: str) -> str:
     if url.startswith("postgresql://"):
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    return _ensure_ssl(url)
+    return _strip_ssl_query(url)
 
 
 def _resolve_database_url() -> str:
